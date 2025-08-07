@@ -86,7 +86,7 @@ def run_bot():
                 last_signal = signal
             else:
                 print("📉 Belum ada sinyal baru.")
-            animasi_countdown(ADMIN_ID, durasi=60)
+            time.sleep(60)
         except Exception as e:
             print("❌ ERROR:", e)
             animasi_countdown(ADMIN_ID, durasi=60)
