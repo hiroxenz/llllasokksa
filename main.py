@@ -1,69 +1,61 @@
 import telebot
-import logging
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import psycopg2
 import os
+import logging
 from datetime import datetime, timedelta
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 
-# Ambil variabel dari environment
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-DATABASE_URL = os.getenv("DATABASE_URL")  # postgresql://user:pass@host:port/dbname
-ADMIN_ID = int(os.getenv("ADMIN_ID"))
+DATABASE_URL = os.getenv("DATABASE_URL")
+ADMIN_ID = os.getenv("ADMIN_ID")
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME")
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# Fungsi koneksi database
-def get_db():
-    conn = psycopg2.connect(DATABASE_URL, sslmode='require')
-    return conn, conn.cursor()
+# DB Connection
+conn = psycopg2.connect(DATABASE_URL, sslmode='require')
+cur = conn.cursor()
 
-# Inisialisasi tabel
-def init_db():
-    conn, cur = get_db()
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS registrations (
-        user_id BIGINT PRIMARY KEY,
-        username TEXT,
-        status TEXT
-    );
-    """)
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS premium_users (
-        user_id BIGINT PRIMARY KEY,
-        username TEXT,
-        expired_at DATE
-    );
-    """)
-    conn.commit()
-    cur.close()
-    conn.close()
+# Create tables
+cur.execute("""
+CREATE TABLE IF NOT EXISTS registrations (
+    user_id BIGINT PRIMARY KEY,
+    username TEXT,
+    status TEXT
+);
+""")
+cur.execute("""
+CREATE TABLE IF NOT EXISTS premium_users (
+    user_id BIGINT PRIMARY KEY,
+    username TEXT,
+    expired TIMESTAMP
+);
+""")
+conn.commit()
 
-init_db()
-
-# /start
+# /start command
 @bot.message_handler(commands=['start'])
-def start(message):
-    bot.send_message(message.chat.id, "👋 Selamat datang!\n\nGunakan perintah berikut:\n/regis - Daftar\n/lregis - Lihat user diterima")
+def start_handler(message):
+    text = "👋 Selamat datang! Gunakan perintah berikut:\n\n/regis - Daftar\n/lregis - Lihat yang diterima"
+    bot.send_message(message.chat.id, text)
 
-# /regis
+# /regis command
 @bot.message_handler(commands=['regis'])
 def regis_user(message):
     user_id = message.from_user.id
     username = message.from_user.username or message.from_user.first_name
 
-    # Cek apakah user sudah daftar
-    conn, cur = get_db()
-    cur.execute("SELECT * FROM registrations WHERE user_id = %s", (user_id,))
-    existing = cur.fetchone()
-    cur.close()
-    conn.close()
-
-    if existing:
-        bot.send_message(message.chat.id, "⚠️ Kamu sudah terdaftar.")
+    # Cek jika sudah daftar
+    cur.execute("SELECT status FROM registrations WHERE user_id = %s", (user_id,))
+    result = cur.fetchone()
+    if result:
+        bot.send_message(message.chat.id, f"📌 Kamu sudah terdaftar dengan status: {result[0]}")
         return
 
     markup = InlineKeyboardMarkup()
@@ -75,7 +67,7 @@ def regis_user(message):
     msg = f"📝 Pendaftaran:\n👤 Username: @{username}\n🆔 ID: {user_id}\n\nPilih:"
     bot.send_message(message.chat.id, msg, reply_markup=markup)
 
-# Button accept / reject
+# Handle accept/reject
 @bot.callback_query_handler(func=lambda call: call.data.startswith("accept_") or call.data.startswith("reject_"))
 def handle_callback(call):
     action, uid = call.data.split("_")
@@ -83,122 +75,93 @@ def handle_callback(call):
     username = call.from_user.username or call.from_user.first_name
     status = "Accepted" if action == "accept" else "Rejected"
 
-    try:
-        conn, cur = get_db()
-        cur.execute("""
-            INSERT INTO registrations (user_id, username, status)
-            VALUES (%s, %s, %s)
-            ON CONFLICT (user_id) DO UPDATE SET status = EXCLUDED.status;
-        """, (uid, username, status))
-        conn.commit()
-        cur.close()
-        conn.close()
+    cur.execute(
+        "INSERT INTO registrations (user_id, username, status) VALUES (%s, %s, %s) "
+        "ON CONFLICT (user_id) DO UPDATE SET status = %s;",
+        (uid, username, status, status)
+    )
+    conn.commit()
 
-        bot.answer_callback_query(call.id, f"Kamu memilih: {status}")
-        bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+    bot.answer_callback_query(call.id, f"Kamu memilih: {status}")
+    bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+    bot.send_message(call.message.chat.id, f"✅ Status pendaftaran: {status}")
 
-        if status == "Accepted":
-            bot.send_message(call.message.chat.id, f"✅ Data user @{username} telah di-*Accept*.", parse_mode="Markdown")
-        else:
-            bot.send_message(call.message.chat.id, f"❌ Data user @{username} telah di-*Reject*.", parse_mode="Markdown")
-
-    except Exception as e:
-        logging.error(f"[ERROR] Callback DB: {e}")
-        bot.send_message(call.message.chat.id, "⚠️ Gagal menyimpan data.")
-
-# /lregis - list accepted
+# /lregis command
 @bot.message_handler(commands=['lregis'])
 def list_accepted(message):
-    try:
-        conn, cur = get_db()
-        cur.execute("SELECT username FROM registrations WHERE status = 'Accepted'")
-        results = cur.fetchall()
-        cur.close()
-        conn.close()
-
-        if results:
-            users = "\n".join([f"@{r[0]}" if r[0] else "(tanpa username)" for r in results])
-            msg = f"✅ User yang *Accepted*:\n\n{users}"
-        else:
-            msg = "❌ Belum ada user yang di-*Accept*."
-
-        bot.send_message(message.chat.id, msg, parse_mode="Markdown")
-    except Exception as e:
-        logging.error(f"[ERROR] /lregis: {e}")
-        bot.send_message(message.chat.id, "⚠️ Gagal mengambil data.")
-
-# /admin - hidden, hanya bisa diakses ID dan username tertentu
-@bot.message_handler(commands=['admin'])
-def admin_command(message):
-    if message.from_user.id == ADMIN_ID and message.from_user.username == ADMIN_USERNAME:
-        bot.send_message(message.chat.id, "🛠️ Admin Mode:\n/addprem [username] [expired]\n/deletprem [username]")
+    cur.execute("SELECT username FROM registrations WHERE status = 'Accepted'")
+    users = cur.fetchall()
+    if users:
+        daftar = "\n".join([f"- @{u[0]}" for u in users])
+        bot.send_message(message.chat.id, f"✅ Pendaftar yang diterima:\n{daftar}")
     else:
-        pass  # tidak merespon
+        bot.send_message(message.chat.id, "Belum ada yang diterima.")
 
-# /addprem username expired_days
+# /admin command (khusus admin)
+@bot.message_handler(commands=['admin'])
+def admin_panel(message):
+    if str(message.from_user.id) == ADMIN_ID and message.from_user.username == ADMIN_USERNAME:
+        bot.send_message(message.chat.id, "🔐 Admin Command:\n/addprem\n/deletprem")
+    else:
+        pass  # Hidden
+
+# /addprem interactive
+user_add_steps = {}
+
 @bot.message_handler(commands=['addprem'])
-def add_prem(message):
-    if message.from_user.id != ADMIN_ID:
+def start_addprem(message):
+    if str(message.from_user.id) != ADMIN_ID:
         return
+    msg = bot.send_message(message.chat.id, "Masukkan username yang ingin diberi premium:")
+    bot.register_next_step_handler(msg, get_username)
 
+def get_username(message):
+    user_add_steps[message.chat.id] = {"username": message.text}
+    msg = bot.send_message(message.chat.id, f"Masukkan jumlah hari expired untuk @{message.text}:")
+    bot.register_next_step_handler(msg, get_expired_days)
+
+def get_expired_days(message):
     try:
-        args = message.text.split()
-        if len(args) != 3:
-            return bot.reply_to(message, "Format: /addprem username jumlah_hari")
+        days = int(message.text)
+        data = user_add_steps.get(message.chat.id, {})
+        username = data.get("username")
 
-        username = args[1].lstrip("@")
-        expired_days = int(args[2])
-        expired_at = datetime.now().date() + timedelta(days=expired_days)
+        cur.execute("SELECT user_id FROM registrations WHERE username = %s AND status = 'Accepted'", (username,))
+        result = cur.fetchone()
 
-        # Ambil user_id dari database registration
-        conn, cur = get_db()
-        cur.execute("SELECT user_id FROM registrations WHERE username = %s", (username,))
-        row = cur.fetchone()
+        if not result:
+            bot.send_message(message.chat.id, f"❌ User @{username} tidak ditemukan atau belum diterima.")
+            return
 
-        if not row:
-            return bot.reply_to(message, "❌ Username tidak ditemukan di data registrasi.")
-
-        user_id = row[0]
+        user_id = result[0]
+        expired_date = datetime.now() + timedelta(days=days)
 
         cur.execute("""
-        INSERT INTO premium_users (user_id, username, expired_at)
-        VALUES (%s, %s, %s)
-        ON CONFLICT (user_id) DO UPDATE SET username = EXCLUDED.username, expired_at = EXCLUDED.expired_at
-        """, (user_id, username, expired_at))
+            INSERT INTO premium_users (user_id, username, expired)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (user_id) DO UPDATE SET expired = %s;
+        """, (user_id, username, expired_date, expired_date))
         conn.commit()
-        cur.close()
-        conn.close()
 
-        bot.reply_to(message, f"✅ @{username} ditambahkan sebagai premium hingga {expired_at}")
+        bot.send_message(message.chat.id, f"✅ @{username} berhasil diberi premium selama {days} hari (sampai {expired_date.date()}).")
+        user_add_steps.pop(message.chat.id, None)
+
     except Exception as e:
-        logging.error(f"[ERROR] /addprem: {e}")
-        bot.reply_to(message, "⚠️ Gagal menambahkan premium user.")
+        bot.send_message(message.chat.id, f"Terjadi kesalahan: {str(e)}")
 
-# /deletprem username
+# /deletprem command
 @bot.message_handler(commands=['deletprem'])
 def delete_prem(message):
-    if message.from_user.id != ADMIN_ID:
+    if str(message.from_user.id) != ADMIN_ID:
         return
+    args = message.text.split()
+    if len(args) != 2:
+        bot.send_message(message.chat.id, "Format: /deletprem [username]")
+        return
+    username = args[1]
+    cur.execute("DELETE FROM premium_users WHERE username = %s", (username,))
+    conn.commit()
+    bot.send_message(message.chat.id, f"✅ Premium user @{username} telah dihapus.")
 
-    try:
-        args = message.text.split()
-        if len(args) != 2:
-            return bot.reply_to(message, "Format: /deletprem username")
-
-        username = args[1].lstrip("@")
-
-        conn, cur = get_db()
-        cur.execute("DELETE FROM premium_users WHERE username = %s", (username,))
-        conn.commit()
-        cur.close()
-        conn.close()
-
-        bot.reply_to(message, f"❌ @{username} telah dihapus dari daftar premium.")
-    except Exception as e:
-        logging.error(f"[ERROR] /deletprem: {e}")
-        bot.reply_to(message, "⚠️ Gagal menghapus premium user.")
-
-# Run bot
-if __name__ == "__main__":
-    logging.info("Bot is running...")
-    bot.infinity_polling()
+# Start polling
+bot.infinity_polling()
