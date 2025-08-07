@@ -3,6 +3,9 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import psycopg2
 import os
 
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+
 # Ambil token dan URL database dari environment variable
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")  # Format: postgresql://user:pass@host:port/dbname
