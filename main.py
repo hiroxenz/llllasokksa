@@ -4,9 +4,9 @@ import requests
 import telebot
 
 # === ENV CONFIG ===
-API_KEY = os.getenv("API_KEY")
+API_KEY = os.getenv("API_KEY")  # Pastikan API_KEY di-set di environment variable
 PAIR = 'XAU/USD'
-TIMEFRAME = '15min'
+TIMEFRAME = '1min'  # Ganti jadi 1 menit
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = os.getenv("ADMIN_ID")
 LOG_FILE = 'sinyal_log_xau.txt'
@@ -20,6 +20,13 @@ def get_price_data():
     try:
         r = requests.get(url)
         data = r.json()
+        
+        # Cek jika ada error dari API Twelve Data
+        if data.get("status") == "error":
+            print(f"❌ Error API: {data.get('message')}")
+            return []
+        
+        # Return reversed data supaya data terbaru di akhir list
         return data.get('values', [])[::-1]
     except Exception as e:
         print("❌ Gagal ambil data:", e)
@@ -32,39 +39,22 @@ def detect_breakout(data):
     prev_high = float(data[-2]['high'])
     prev_low = float(data[-2]['low'])
     last_close = float(data[-1]['close'])
+    
     if last_close > prev_high:
         return 'BUY'
     elif last_close < prev_low:
         return 'SELL'
+    
     return None
-
-# === LOG FILE ===
-def log_signal(signal, time_str, price):
-    with open(LOG_FILE, "a") as f:
-        f.write(f"{time_str} | {signal} | {price}\n")
-
-# === ANIMASI COUNTDOWN 60 DETIK ===
-def animasi_countdown(chat_id, durasi=60):
-    msg = bot.send_message(chat_id, f"⏳ Menunggu sinyal dalam {durasi}s...")
-    for detik in range(durasi, 0, -1):
-        try:
-            bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=msg.message_id,
-                text=f"⏳ Menunggu sinyal dalam {detik}s..."
-            )
-            time.sleep(1)
-        except Exception as e:
-            print("⚠️ Animasi terhenti:", e)
-            break
 
 # === MAIN LOOP ===
 def run_bot():
-    last_signal = ""
+    last_signal = ""  # Untuk memastikan sinyal tidak dikirim berkali-kali
     while True:
         try:
             print("⏳ Mengecek sinyal...")
             data = get_price_data()
+            
             if not data:
                 animasi_countdown(ADMIN_ID, durasi=60)
                 continue
@@ -73,6 +63,8 @@ def run_bot():
             if signal and signal != last_signal:
                 time_str = data[-1]['datetime']
                 price = data[-1]['close']
+                
+                # Pesan yang akan dikirimkan ke admin
                 msg = f"""📡 Sinyal XAU/USD Terbaru
 ━━━━━━━━━━━━━━━━━━
 🔔 Arah: {signal}
@@ -81,12 +73,20 @@ def run_bot():
 ━━━━━━━━━━━━━━━━━━
 🚀 Eksekusi sinyal dan pantau chart!
 """
+                # Kirim sinyal ke admin
                 bot.send_message(chat_id=ADMIN_ID, text=msg)
+                
+                # Log sinyal ke file
                 log_signal(signal, time_str, price)
+                
+                # Simpan sinyal terakhir
                 last_signal = signal
             else:
                 print("📉 Belum ada sinyal baru.")
+            
+            # Tidur selama 60 detik sebelum melakukan pengecekan berikutnya
             time.sleep(60)
+        
         except Exception as e:
             print("❌ ERROR:", e)
             time.sleep(60)
