@@ -89,7 +89,7 @@ def run_bot():
             time.sleep(60)
         except Exception as e:
             print("❌ ERROR:", e)
-            animasi_countdown(ADMIN_ID, durasi=60)
+            time.sleep(60)
 
 # === START ===
 if __name__ == '__main__':
