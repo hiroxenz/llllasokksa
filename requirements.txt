@@ -2,3 +2,4 @@ python-telegram-bot==13.15
 pyTelegramBotAPI
 psycopg2-binary
 python-dotenv
+requests
