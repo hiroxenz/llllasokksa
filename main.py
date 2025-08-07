@@ -1,12 +1,18 @@
-import requests, time, os
+import os
+import time
+import requests
+import telebot
 
-# KONFIGURASI DARI ENV VAR
+# KONFIGURASI DARI ENV
 API_KEY = os.getenv("API_KEY")
 PAIR = 'XAU/USD'
 TIMEFRAME = '15min'
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID = os.getenv("ADMIN_ID")
+ADMIN_ID = os.getenv("ADMIN_ID")
 LOG_FILE = 'sinyal_log_xau.txt'
+
+# Inisialisasi bot Telegram
+bot = telebot.TeleBot(BOT_TOKEN)
 
 def get_price_data():
     url = f'https://api.twelvedata.com/time_series?symbol={PAIR}&interval={TIMEFRAME}&outputsize=5&apikey={API_KEY}'
@@ -17,16 +23,6 @@ def get_price_data():
     except Exception as e:
         print("❌ Gagal ambil data:", e)
         return []
-
-def send_telegram(msg):
-    try:
-        r = requests.post(
-            f'https://api.telegram.org/bot{BOT_TOKEN}/sendMessage',
-            data={'chat_id': CHAT_ID, 'text': msg}
-        )
-        print("✅ Terkirim ke Telegram:", r.status_code)
-    except Exception as e:
-        print("❌ Gagal kirim Telegram:", e)
 
 def detect_breakout(data):
     if len(data) < 3:
@@ -40,6 +36,10 @@ def detect_breakout(data):
         return 'SELL'
     else:
         return None
+
+def log_signal(signal, time_str, price):
+    with open(LOG_FILE, "a") as f:
+        f.write(f"{time_str} | {signal} | {price}\n")
 
 def run_bot():
     last_signal = ""
@@ -63,7 +63,8 @@ def run_bot():
 ━━━━━━━━━━━━━━━━━━
 🚀 Eksekusi sinyal dan pantau chart!
 """
-                send_telegram(msg)
+                bot.send_message(chat_id=ADMIN_ID, text=msg)
+                log_signal(signal, time_str, price)
                 last_signal = signal
             else:
                 print("📉 Belum ada sinyal baru.")
