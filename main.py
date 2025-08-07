@@ -1,4 +1,5 @@
 import telebot
+import logging
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import psycopg2
 import os
