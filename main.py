@@ -2,195 +2,191 @@ import logging
 import psycopg2
 import schedule
 import time
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ParseMode
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackQueryHandler
-from datetime import datetime, timedelta
-import os
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.constants import ParseMode
+from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, MessageHandler, Filters, CallbackContext
+from datetime import datetime
 
-# Masukkan variabel berikut sesuai dengan konfigurasi Anda
-DATABASE_URL = os.getenv("DATABASE_URL")  # Gunakan variabel env dari Railway
-ADMIN_ID = os.getenv("ADMIN_ID")  # ID Admin Telegram
-BOT_TOKEN = os.getenv("BOT_TOKEN")  # Token bot Telegram
-
-# Setup logging
+# Mengaktifkan logging untuk debug
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
                     level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Fungsi untuk menghubungkan ke PostgreSQL
-def connect_db():
+# Gantilah dengan ID admin dan bot token Anda
+ADMIN_ID = 'YOUR_ADMIN_ID'
+BOT_TOKEN = 'YOUR_BOT_TOKEN'
+
+# Koneksi database PostgreSQL
+DATABASE_URL = 'YOUR_DATABASE_URL'
+
+# Fungsi untuk menghubungkan ke database
+def get_db_connection():
     conn = psycopg2.connect(DATABASE_URL)
     return conn
 
-# Fungsi untuk membuat tabel jika belum ada
-def create_table():
-    conn = connect_db()
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS jadwal (
-            id SERIAL PRIMARY KEY,
-            jadwal TEXT,
-            tanggal DATE
-        );
-    """)
-    conn.commit()
-    cursor.close()
-    conn.close()
-
-# Fungsi untuk menambah jadwal ke database
-def add_jadwal(jadwal, tanggal):
-    conn = connect_db()
-    cursor = conn.cursor()
-    cursor.execute("INSERT INTO jadwal (jadwal, tanggal) VALUES (%s, %s)", (jadwal, tanggal))
-    conn.commit()
-    cursor.close()
-    conn.close()
-
-# Fungsi untuk mengambil semua jadwal
-def get_jadwal():
-    conn = connect_db()
-    cursor = conn.cursor()
-    cursor.execute("SELECT id, jadwal, tanggal FROM jadwal ORDER BY tanggal ASC")
-    result = cursor.fetchall()
-    cursor.close()
-    conn.close()
-    return result
-
-# Fungsi untuk menghapus jadwal berdasarkan ID
-def delete_jadwal(id):
-    conn = connect_db()
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM jadwal WHERE id = %s", (id,))
-    conn.commit()
-    cursor.close()
-    conn.close()
-
-# Fungsi untuk mengirim jadwal hari ini kepada admin
-def send_today_schedule(context):
-    today = datetime.today().date()
-    jadwal_today = get_jadwal_for_date(today)
-
-    if jadwal_today:
-        message = f"*Jadwal Hari Ini ({today}):*\n"
-        for jadwal in jadwal_today:
-            message += f"🗓 *{jadwal[1]}* pada *{jadwal[2]}*\n"
-        context.bot.send_message(chat_id=ADMIN_ID, text=message, parse_mode=ParseMode.MARKDOWN)
-        
-        keyboard = [[InlineKeyboardButton("✅ Sudah Dilihat", callback_data='accept')]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        context.bot.send_message(chat_id=ADMIN_ID, text="Apakah Anda sudah melihat jadwal hari ini?", reply_markup=reply_markup)
-    else:
-        context.bot.send_message(chat_id=ADMIN_ID, text="📅 *Tidak ada jadwal hari ini.*", parse_mode=ParseMode.MARKDOWN)
-
-# Fungsi untuk mendapatkan jadwal berdasarkan tanggal
-def get_jadwal_for_date(date):
-    conn = connect_db()
-    cursor = conn.cursor()
-    cursor.execute("SELECT jadwal, tanggal FROM jadwal WHERE tanggal = %s", (date,))
-    result = cursor.fetchall()
-    cursor.close()
-    conn.close()
-    return result
-
-# Handler untuk /start
+# /start untuk memulai bot
 def start(update, context):
-    update.message.reply_text(
-        "*Selamat datang di Bot Jadwal!*\n\n"
-        "🔹 *Perintah yang tersedia:*\n"
-        "/jadwal - 🗓 Menambahkan jadwal baru\n"
-        "/listjadwal - 📋 Menampilkan semua jadwal yang telah ditambahkan\n"
-        "/deljadwal - ❌ Menghapus jadwal berdasarkan nomor urut\n"
-        "Jadwal hari ini akan dikirimkan secara otomatis setiap pagi!"
-        , parse_mode=ParseMode.MARKDOWN
-    )
+    keyboard = [
+        [InlineKeyboardButton("Lihat Jadwal", callback_data='listjadwal')],
+        [InlineKeyboardButton("Tambah Jadwal", callback_data='jadwal')],
+        [InlineKeyboardButton("Hapus Jadwal", callback_data='deljadwal')],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    update.message.reply_text("Selamat datang! Pilih opsi berikut:", reply_markup=reply_markup)
 
-# Handler untuk /jadwal
+# /jadwal untuk menambahkan jadwal baru
 def jadwal(update, context):
-    update.message.reply_text("✍️ *Silakan masukkan jadwal baru dengan format berikut:* \n"
-                              "Contoh: *'Meeting 2025-08-10'*\n\n"
-                              "Masukkan jadwal dan tanggalnya:", parse_mode=ParseMode.MARKDOWN)
+    update.message.reply_text("Silakan kirimkan pesan jadwal Anda (format: Jadwal [Tanggal] [Waktu])")
+    return 'AWAITING_SCHEDULE'
 
-def handle_jadwal_message(update, context):
-    user_input = update.message.text.split(' ')
-    if len(user_input) < 2:
-        update.message.reply_text("🚨 *Format tidak valid!*\n"
-                                  "Gunakan format: 'Jadwal YYYY-MM-DD' (misal: *Meeting 2025-08-10*)",
-                                  parse_mode=ParseMode.MARKDOWN)
+# Fungsi untuk menangani input jadwal
+def handle_jadwal(update, context):
+    message = update.message.text
+    schedule_data = message.split(" ")
+
+    if len(schedule_data) < 3:
+        update.message.reply_text("Format tidak sesuai. Harap kirimkan dengan format: 'Jadwal [Tanggal] [Waktu]'")
         return
 
-    jadwal = " ".join(user_input[:-1])
-    tanggal = user_input[-1]
+    jadwal = " ".join(schedule_data[1:])
+    tanggal = schedule_data[0]
 
-    try:
-        datetime.strptime(tanggal, '%Y-%m-%d')  # Validasi format tanggal
-        add_jadwal(jadwal, tanggal)
-        update.message.reply_text(f"🎉 *Jadwal '{jadwal}' pada {tanggal} berhasil ditambahkan!*",
-                                  parse_mode=ParseMode.MARKDOWN)
-    except ValueError:
-        update.message.reply_text("❌ *Format tanggal tidak valid!*\n"
-                                  "Pastikan formatnya adalah YYYY-MM-DD (misal: *2025-08-10*).",
-                                  parse_mode=ParseMode.MARKDOWN)
+    # Simpan jadwal ke database
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("INSERT INTO jadwal (jadwal, tanggal) VALUES (%s, %s)", (jadwal, tanggal))
+    conn.commit()
+    cur.close()
+    conn.close()
 
-# Handler untuk /listjadwal
+    update.message.reply_text(f"Jadwal berhasil ditambahkan: {jadwal} pada {tanggal}")
+
+# /listjadwal untuk melihat jadwal yang sudah ditambahkan
 def list_jadwal(update, context):
-    jadwals = get_jadwal()
-    if jadwals:
-        message = "*Daftar Jadwal:*\n"
-        for idx, jadwal in enumerate(jadwals, start=1):
-            message += f"🔢 {idx}. {jadwal[1]} pada {jadwal[2]}\n"
-        update.message.reply_text(message, parse_mode=ParseMode.MARKDOWN)
-    else:
-        update.message.reply_text("📅 *Tidak ada jadwal yang tersedia.*", parse_mode=ParseMode.MARKDOWN)
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM jadwal")
+    rows = cur.fetchall()
 
-# Handler untuk /deljadwal
+    if not rows:
+        update.message.reply_text("Belum ada jadwal yang ditambahkan.")
+        return
+
+    schedule_text = "Daftar Jadwal:\n"
+    for i, row in enumerate(rows, 1):
+        schedule_text += f"{i}. {row[1]} pada {row[2]}\n"
+
+    update.message.reply_text(schedule_text)
+    cur.close()
+    conn.close()
+
+# /deljadwal untuk menghapus jadwal berdasarkan nomor urut
 def del_jadwal(update, context):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM jadwal")
+    rows = cur.fetchall()
+
+    if not rows:
+        update.message.reply_text("Tidak ada jadwal yang dapat dihapus.")
+        return
+
+    schedule_text = "Daftar Jadwal:\n"
+    for i, row in enumerate(rows, 1):
+        schedule_text += f"{i}. {row[1]} pada {row[2]}\n"
+
+    update.message.reply_text(schedule_text)
+    update.message.reply_text("Kirimkan nomor jadwal yang ingin dihapus.")
+    return 'AWAITING_DELETE'
+
+# Menghapus jadwal yang dipilih oleh pengguna
+def handle_delete(update, context):
+    schedule_num = update.message.text
+
     try:
-        jadwal_id = int(update.message.text.split(' ')[1])
-        jadwals = get_jadwal()
+        schedule_num = int(schedule_num)
+    except ValueError:
+        update.message.reply_text("Nomor jadwal tidak valid.")
+        return
 
-        if 1 <= jadwal_id <= len(jadwals):
-            delete_jadwal(jadwal_id)
-            update.message.reply_text(f"✅ *Jadwal nomor {jadwal_id} telah berhasil dihapus.*",
-                                      parse_mode=ParseMode.MARKDOWN)
-        else:
-            update.message.reply_text("🚨 *Nomor jadwal tidak valid.*", parse_mode=ParseMode.MARKDOWN)
-    except (IndexError, ValueError):
-        update.message.reply_text("❌ *Silakan masukkan nomor jadwal yang ingin dihapus.*",
-                                  parse_mode=ParseMode.MARKDOWN)
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM jadwal WHERE id = %s", (schedule_num,))
+    row = cur.fetchone()
 
-# Fungsi untuk menangani callback button
-def button(update, context):
+    if not row:
+        update.message.reply_text(f"Jadwal dengan nomor {schedule_num} tidak ditemukan.")
+        return
+
+    cur.execute("DELETE FROM jadwal WHERE id = %s", (schedule_num,))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    update.message.reply_text(f"Jadwal {schedule_num} berhasil dihapus.")
+
+# Menangani pesan yang tidak dikenali
+def unknown(update, context):
+    update.message.reply_text("Perintah tidak dikenali. Ketik /start untuk memulai.")
+
+# Fungsi untuk menjadwalkan pengingat
+def send_reminder(update, context):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM jadwal")
+    rows = cur.fetchall()
+
+    if not rows:
+        cur.close()
+        conn.close()
+        return
+
+    for row in rows:
+        jadwal, tanggal = row[1], row[2]
+        if datetime.now().strftime('%Y-%m-%d') == tanggal:
+            context.bot.send_message(chat_id=update.message.chat_id, text=f"Jadwal hari ini: {jadwal} pada {tanggal}")
+            keyboard = [
+                [InlineKeyboardButton("Terapkan", callback_data=f'accept_{row[0]}')],
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            context.bot.send_message(chat_id=update.message.chat_id, text="Apakah Anda ingin menerima jadwal ini?", reply_markup=reply_markup)
+    cur.close()
+    conn.close()
+
+# Fungsi untuk mengonfirmasi penerimaan jadwal
+def accept_jadwal(update, context):
     query = update.callback_query
-    if query.data == "accept":
-        query.answer()
-        context.bot.send_message(chat_id=ADMIN_ID, text="👍 *Terima kasih, jadwal sudah dilihat!*", parse_mode=ParseMode.MARKDOWN)
+    query.answer()
+    query.edit_message_text(text="Jadwal diterima. Terima kasih!")
 
-# Setup scheduler untuk mengirimkan jadwal setiap hari
-def setup_scheduler(dispatcher):
-    schedule.every().day.at("08:00").do(send_today_schedule, context=dispatcher)
-    while True:
-        schedule.run_pending()
-        time.sleep(1)
-
+# Main function untuk setup bot
 def main():
-    # Inisialisasi bot
     updater = Updater(BOT_TOKEN, use_context=True)
-    dispatcher = updater.dispatcher
+    dp = updater.dispatcher
 
-    # Membuat tabel jadwal jika belum ada
-    create_table()
+    # Menambahkan handler
+    dp.add_handler(CommandHandler('start', start))
+    dp.add_handler(CommandHandler('jadwal', jadwal))
+    dp.add_handler(CommandHandler('listjadwal', list_jadwal))
+    dp.add_handler(CommandHandler('deljadwal', del_jadwal))
 
-    # Menambahkan handler untuk perintah
-    dispatcher.add_handler(CommandHandler("start", start))
-    dispatcher.add_handler(CommandHandler("jadwal", jadwal))
-    dispatcher.add_handler(CommandHandler("listjadwal", list_jadwal))
-    dispatcher.add_handler(CommandHandler("deljadwal", del_jadwal))
-    dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_jadwal_message))
-    dispatcher.add_handler(CallbackQueryHandler(button))
+    # Handling untuk mengirim jadwal
+    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_jadwal))
+    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_delete))
+
+    # Handling untuk callback query
+    dp.add_handler(CallbackQueryHandler(accept_jadwal, pattern='^accept_'))
+
+    # Set jadwal reminder setiap hari
+    schedule.every().day.at("09:00").do(send_reminder, update=updater.bot, context=updater.context)
 
     # Mulai bot
     updater.start_polling()
     updater.idle()
+
+    while True:
+        schedule.run_pending()
+        time.sleep(60)
 
 if __name__ == '__main__':
     main()
