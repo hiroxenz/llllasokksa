@@ -1,96 +1,86 @@
 import os
-import time
 import requests
-import telebot
+import threading
+import time
+from telegram import Bot
+from telegram.ext import Updater, CommandHandler
+from dotenv import load_dotenv
+import logging
 
-# === ENV CONFIG ===
-API_KEY = os.getenv("API_KEY")
-PAIR = 'XAU/USD'
-TIMEFRAME = '15min'
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+# Set up logging to catch bot errors
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+                    level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Memuat environment variables dari file .env
+load_dotenv()
+
+# API Key Telegram dan Alpha Vantage
+TELEGRAM_TOKEN = os.getenv("BOT_TOKEN")
+ALPHA_VANTAGE_API_KEY = os.getenv("API_KEY")
 ADMIN_ID = os.getenv("ADMIN_ID")
-LOG_FILE = 'sinyal_log_xau.txt'
 
-# === INIT BOT ===
-bot = telebot.TeleBot(BOT_TOKEN)
+# URL untuk mendapatkan data XAU/USD dari Alpha Vantage
+API_URL = f"https://www.alphavantage.co/query?function=TIME_SERIES_INTRADAY&symbol=XAUUSD=X&interval=1min&apikey={ALPHA_VANTAGE_API_KEY}"
 
-# === FETCH PRICE DATA ===
-def get_price_data():
-    url = f'https://api.twelvedata.com/time_series?symbol={PAIR}&interval={TIMEFRAME}&outputsize=5&apikey={API_KEY}'
+# Fungsi untuk mendapatkan harga XAU/USD terbaru
+def get_xau_usd_price():
+    response = requests.get(API_URL)
+    data = response.json()
     try:
-        r = requests.get(url)
-        data = r.json()
-        return data.get('values', [])[::-1]
-    except Exception as e:
-        print("❌ Gagal ambil data:", e)
-        return []
-
-# === DETEKSI BREAKOUT ===
-def detect_breakout(data):
-    if len(data) < 3:
+        # Mengambil harga penutupan terakhir (1 menit sebelumnya)
+        time_series = data["Time Series (1min)"]
+        latest_time = list(time_series.keys())[0]
+        latest_price = time_series[latest_time]["4. close"]
+        return float(latest_price)
+    except KeyError:
         return None
-    prev_high = float(data[-2]['high'])
-    prev_low = float(data[-2]['low'])
-    last_close = float(data[-1]['close'])
-    if last_close > prev_high:
-        return 'BUY'
-    elif last_close < prev_low:
-        return 'SELL'
-    return None
 
-# === LOG FILE ===
-def log_signal(signal, time_str, price):
-    with open(LOG_FILE, "a") as f:
-        f.write(f"{time_str} | {signal} | {price}\n")
+# Fungsi untuk menghitung TP dan SL berdasarkan harga
+def calculate_tp_sl(current_price):
+    tp = current_price * 1.005  # Target Profit +0.5%
+    sl = current_price * 0.995  # Stop Loss -0.5%
+    return tp, sl
 
-# === ANIMASI COUNTDOWN 60 DETIK ===
-def animasi_countdown(chat_id, durasi=60):
-    msg = bot.send_message(chat_id, f"⏳ Menunggu sinyal dalam {durasi}s...")
-    for detik in range(durasi, 0, -1):
-        try:
-            bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=msg.message_id,
-                text=f"⏳ Menunggu sinyal dalam {detik}s..."
-            )
-            time.sleep(1)
-        except Exception as e:
-            print("⚠️ Animasi terhenti:", e)
-            break
-
-# === MAIN LOOP ===
-def run_bot():
-    last_signal = ""
+# Fungsi untuk mengirimkan update harga dan rekomendasi ke Admin
+def send_price_update():
+    bot = Bot(token=TELEGRAM_TOKEN)
+    
     while True:
-        try:
-            print("⏳ Mengecek sinyal...")
-            data = get_price_data()
-            if not data:
-                #animasi_countdown(ADMIN_ID, durasi=60)
-                time.sleep(60)
-                continue
+        price = get_xau_usd_price()
+        if price is None:
+            message = "Tidak dapat mengambil data harga XAU/USD saat ini."
+        else:
+            tp, sl = calculate_tp_sl(price)
+            message = (
+                f"Update Harga XAU/USD\n"
+                f"Harga saat ini: ${price:.2f}\n"
+                f"Rekomendasi:\n"
+                f"Open Posisi: {price:.2f}\n"
+                f"Target Profit (TP): {tp:.2f}\n"
+                f"Stop Loss (SL): {sl:.2f}"
+            )
 
-            signal = detect_breakout(data)
-            if signal and signal != last_signal:
-                time_str = data[-1]['datetime']
-                price = data[-1]['close']
-                msg = f"""📡 Sinyal XAU/USD Terbaru
-━━━━━━━━━━━━━━━━━━
-🔔 Arah: {signal}
-⏰ Waktu: {time_str}
-💰 Harga: {price}
-━━━━━━━━━━━━━━━━━━
-🚀 Eksekusi sinyal dan pantau chart!
-"""
-                bot.send_message(chat_id=ADMIN_ID, text=msg)
-                last_signal = signal
-            else:
-                print("📉 Belum ada sinyal baru.")
-            time.sleep(60)
-        except Exception as e:
-            print("❌ ERROR:", e)
-            time.sleep(60)
+        # Kirim pesan ke Admin
+        bot.send_message(chat_id=ADMIN_ID, text=message)
+        
+        # Tunggu 5 menit sebelum mengirim update berikutnya
+        time.sleep(60)  # 300 detik = 5 menit
 
-# === START ===
+# Fungsi utama untuk menjalankan bot
+def main():
+    # Inisialisasi Updater
+    updater = Updater(TELEGRAM_TOKEN, use_context=True)
+    dp = updater.dispatcher
+
+    # Menjalankan thread untuk mengirimkan update harga XAU/USD ke admin
+    update_thread = threading.Thread(target=send_price_update)
+    update_thread.daemon = True  # Menjalankan thread sebagai daemon sehingga bisa berhenti saat program utama berhenti
+    update_thread.start()
+
+    # Mulai polling untuk bot (meskipun tidak ada perintah yang dijalankan)
+    updater.start_polling()
+    updater.idle()
+
 if __name__ == '__main__':
-    run_bot()
+    main()
