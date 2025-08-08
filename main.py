@@ -66,7 +66,8 @@ def run_bot():
             print("⏳ Mengecek sinyal...")
             data = get_price_data()
             if not data:
-                animasi_countdown(ADMIN_ID, durasi=60)
+                #animasi_countdown(ADMIN_ID, durasi=60)
+                time.sleep(60)
                 continue
 
             signal = detect_breakout(data)
