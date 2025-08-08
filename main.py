@@ -4,7 +4,7 @@ import schedule
 import time
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
-from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, MessageHandler, Filters, CallbackContext
+from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, MessageHandler, filters, CallbackContext
 from datetime import datetime
 
 # Mengaktifkan logging untuk debug
@@ -171,8 +171,8 @@ def main():
     dp.add_handler(CommandHandler('deljadwal', del_jadwal))
 
     # Handling untuk mengirim jadwal
-    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_jadwal))
-    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_delete))
+    dp.add_handler(MessageHandler(filters.text & ~filters.command, handle_jadwal))
+    dp.add_handler(MessageHandler(filters.text & ~filters.command, handle_delete))
 
     # Handling untuk callback query
     dp.add_handler(CallbackQueryHandler(accept_jadwal, pattern='^accept_'))
