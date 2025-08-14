@@ -21,6 +21,8 @@ HEADERS = {
     'x-locale': 'en',
 }
 
+MENU_IMAGE_URL = "https://raw.githubusercontent.com/hiroxenz/llllasokksa/refs/heads/main/photo_2025-08-14_15-26-37.jpg"
+
 waiting_for_image = set()
 
 # ===== ADMIN CHECK =====
@@ -35,14 +37,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await menu(update, context)
 
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = (
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("🚫 Anda tidak memiliki izin untuk menggunakan bot ini.")
+        return
+
+    caption = (
         "╭━━━『 📜 *Main Menu* 』━━━╮\n"
         "┣ 🎯 /upscaling — *Perbesar & tingkatkan kualitas gambar*\n"
         "┣ 📌 /menu — *Tampilkan menu ini*\n"
         "┣ 🏁 /start — *Mulai bot*\n"
         "╰━━━━━━━━━━━━━━━━━━╯"
     )
-    await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+
+    await update.message.reply_photo(photo=MENU_IMAGE_URL, caption=caption, parse_mode=ParseMode.MARKDOWN)
 
 async def start_upscaling(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
