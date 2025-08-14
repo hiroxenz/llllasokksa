@@ -1,17 +1,25 @@
+#!/usr/bin/env python3
+"""
+Telegram bot (admin-only) with:
+- /start, /menu
+- /upscaling (Pixelcut usage)
+- /register (email -> code -> full flow using YOUR API endpoints)
+Notes: Replace API_BASE and ENDPOINT_* with your own server endpoints.
+"""
+
 import os
-import re
 import json
 import time
-import uuid
 import asyncio
 import random
 import string
 import secrets
-import requests
-from datetime import datetime, timedelta
 from dataclasses import dataclass, field
 from typing import Dict, Tuple
+from datetime import datetime, timedelta
 
+import requests
+from faker import Faker
 from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import (
@@ -19,15 +27,13 @@ from telegram.ext import (
     filters, ConversationHandler
 )
 
-# ===============================
-# ENV & CONFIG
-# ===============================
+# ===== ENV / CONFIG =====
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
 MENU_IMAGE_URL = "https://raw.githubusercontent.com/hiroxenz/llllasokksa/refs/heads/main/photo_2025-08-14_15-26-37.jpg"
 
-# === Pixelcut (Upscaling) ===
+# Pixelcut (upscaling) config
 PIXELCUT_URL = "https://api2.pixelcut.app/image/upscale/v1"
 PIXELCUT_HEADERS = {
     'authority': 'api2.pixelcut.app',
@@ -39,24 +45,22 @@ PIXELCUT_HEADERS = {
     'x-locale': 'en',
 }
 
-# === API MILIKMU (GANTI DENGAN punyamu) ===
-API_BASE = "https://api.domain-kamu.com"  # <- ganti
-ENDPOINT_GET_SESSION    = f"{API_BASE}/session/init"                 # return: {client_id, app_id, rollout_hash, csrftoken}
-ENDPOINT_CREATE_ACCOUNT = f"{API_BASE}/accounts/create/attempt"      # cek username/step awal
-ENDPOINT_CHECK_AGE      = f"{API_BASE}/accounts/age/check"           # {eligible_to_register: true/false}
-ENDPOINT_SEND_CODE      = f"{API_BASE}/accounts/email/send_code"     # {email_sent: true/false}
-ENDPOINT_VERIFY_CODE    = f"{API_BASE}/accounts/email/verify_code"   # {signup_code: "..."}
-ENDPOINT_FINALIZE       = f"{API_BASE}/accounts/create/finalize"     # hasil final
+# ===== YOUR API (PLACEHOLDERS) - REPLACE WITH YOUR OWN SERVER =====
+API_BASE = "https://www.instagram.com"
 
-# ===============================
-# STATE CONVERSATION
-# ===============================
+ENDPOINT_GET_SESSION    = f"{API_BASE}/"
+ENDPOINT_CREATE_ACCOUNT = f"{API_BASE}/api/v1/web/accounts/web_create_ajax/attempt/"
+ENDPOINT_CHECK_AGE      = f"{API_BASE}/api/v1/web/consent/check_age_eligibility/"
+ENDPOINT_SEND_CODE      = f"{API_BASE}/api/v1/accounts/send_verify_email/"
+ENDPOINT_VERIFY_CODE    = f"{API_BASE}/api/v1/accounts/check_confirmation_code/"
+ENDPOINT_FINALIZE       = f"{API_BASE}/api/v1/web/accounts/web_create_ajax/"
+
+
+# ===== Conversation states =====
 WAITING_IMAGE = 1
 REG_WAIT_EMAIL, REG_WAIT_CODE = range(2)
 
-# ===============================
-# HELPER & MODEL ALUR REGISTER
-# ===============================
+# ===== Helpers =====
 def rand_str(n=12, pool=string.ascii_letters + string.digits):
     return ''.join(secrets.choice(pool) for _ in range(n))
 
@@ -70,14 +74,18 @@ class Setup:
 
 @dataclass
 class Create_Accnt:
+    """Wrapper to call YOUR API endpoints in the order:
+       SetAccnt -> ICreate -> IBirthday -> IGetCode -> IVcode -> IVsig
+       NOTE: This class uses YOUR endpoints (placeholders). Replace endpoints to match your API.
+    """
     email: str
     setup: Setup = field(default_factory=Setup)
     s: requests.Session = field(default_factory=requests.Session)
-    headers: Dict[str, str] = field(default_factory=dict)
 
-    # state random identity
+    # random identity
+    faker: Faker = field(default_factory=lambda: Faker("id_ID"))
     first_name: str = field(default_factory=lambda: "User" + rand_str(5).lower())
-    username: str = field(default_factory=lambda: ("user" + rand_str(6, string.ascii_lowercase + string.digits)))
+    username: str = field(default_factory=lambda: "user" + rand_str(6, string.ascii_lowercase + string.digits))
     plain_password: str = field(default_factory=lambda: rand_str(12))
     enc_password: str = ""
     birth_day: int = field(default_factory=lambda: random.randint(1, 28))
@@ -87,11 +95,13 @@ class Create_Accnt:
         "".join(random.choices(string.ascii_lowercase + string.digits, k=6)) for _ in range(3)
     ))
 
-    # meta dari SetAccnt
+    # meta (filled by SetAccnt)
     client_id: str = ""
     app_id: str = ""
     rollout_hash: str = ""
     csrftoken: str = ""
+    headers: Dict[str, str] = field(default_factory=dict)
+    cookies_string: str = ""
 
     def _build_headers(self, extra: Dict[str, str] = None) -> Dict[str, str]:
         base = {
@@ -103,28 +113,29 @@ class Create_Accnt:
             base.update(extra)
         return base
 
-    # ===== SetAccnt =====
-    def SetAccnt(self) -> Tuple[str, str]:
-        # generate enc_password
+    # ----- SetAccnt -----
+    def SetAccnt(self) -> Tuple[bool, str]:
+        """Call your session init endpoint which should return metadata:
+           { client_id, app_id, rollout_hash, csrftoken }
+        """
         self.enc_password = f"#PWD_BROWSER:0:{now_ts()}:{self.plain_password}"
-
         r = self.s.get(ENDPOINT_GET_SESSION, headers=self._build_headers(), timeout=20)
         r.raise_for_status()
         meta = r.json()
-        self.client_id    = meta.get("client_id","")
-        self.app_id       = meta.get("app_id","")
-        self.rollout_hash = meta.get("rollout_hash","")
-        self.csrftoken    = meta.get("csrftoken","")
-
-        cookies_string = "; ".join([f"{k}={v}" for k,v in self.s.cookies.get_dict().items()])
+        self.client_id = meta.get("client_id", "")
+        self.app_id = meta.get("app_id", "")
+        self.rollout_hash = meta.get("rollout_hash", "")
+        self.csrftoken = meta.get("csrftoken", "")
+        self.cookies_string = "; ".join([f"{k}={v}" for k, v in self.s.cookies.get_dict().items()])
+        # build headers used downstream
         self.headers = self._build_headers({
             "X-Csrftoken": self.csrftoken,
             "X-App-Id": self.app_id,
             "X-Rollout-Hash": self.rollout_hash,
         })
-        return self.csrftoken, cookies_string
+        return True, "OK"
 
-    # ===== ICreate =====
+    # ----- ICreate -----
     def ICreate(self) -> bool:
         data = {
             "enc_password": self.enc_password,
@@ -137,31 +148,31 @@ class Create_Accnt:
         r = self.s.post(ENDPOINT_CREATE_ACCOUNT, headers=self.headers, data=data, timeout=30)
         r.raise_for_status()
         j = r.json()
+        # expected: either username_suggestions or ok flag
         return bool("username_suggestions" in j or j.get("ok"))
 
-    # ===== IBirthday =====
+    # ----- IBirthday -----
     def IBirthday(self) -> bool:
         data = {"day": self.birth_day, "month": self.birth_month, "year": self.birth_year}
         r = self.s.post(ENDPOINT_CHECK_AGE, headers=self.headers, data=data, timeout=20)
         r.raise_for_status()
         return bool(r.json().get("eligible_to_register", False))
 
-    # ===== IGetCode =====
+    # ----- IGetCode -----
     def IGetCode(self) -> bool:
         data = {"device_id": self.client_id, "email": self.email}
         r = self.s.post(ENDPOINT_SEND_CODE, headers=self.headers, data=data, timeout=20)
         r.raise_for_status()
         return bool(r.json().get("email_sent", False))
 
-    # ===== IVcode =====
+    # ----- IVcode -----
     def IVcode(self, code: str):
         data = {"code": code, "device_id": self.client_id, "email": self.email}
         r = self.s.post(ENDPOINT_VERIFY_CODE, headers=self.headers, data=data, timeout=20)
         r.raise_for_status()
-        j = r.json()
-        return j.get("signup_code", None)
+        return r.json().get("signup_code", None)
 
-    # ===== IVsig =====
+    # ----- IVsig -----
     def IVsig(self, signup_code: str) -> Dict:
         data = {
             "enc_password": self.enc_password,
@@ -180,23 +191,16 @@ class Create_Accnt:
         r.raise_for_status()
         return r.json()
 
-# ===============================
-# ADMIN GUARD
-# ===============================
+# ===== Admin guard =====
 def is_admin(update: Update) -> bool:
     return update.effective_user and update.effective_user.id == ADMIN_ID
 
-# ===============================
-# /start
-# ===============================
+# ===== Commands =====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update):
         return
     await menu(update, context)
 
-# ===============================
-# /menu
-# ===============================
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update):
         return
@@ -210,9 +214,7 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_photo(photo=MENU_IMAGE_URL, caption=menu_text, parse_mode=ParseMode.MARKDOWN)
 
-# ===============================
-# /upscaling (tetap)
-# ===============================
+# ----- Upscaling handlers (unchanged) -----
 async def upscaling(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update):
         return
@@ -222,7 +224,6 @@ async def upscaling(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update):
         return
-
     file_data = None
     if update.message.photo:
         file_id = update.message.photo[-1].file_id
@@ -231,15 +232,10 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif update.message.text and update.message.text.strip().lower().startswith("http"):
         img_url = update.message.text.strip()
         file_data = requests.get(img_url, timeout=30).content
-
     if not file_data:
         await update.message.reply_text("❌ Gagal membaca gambar. Kirim foto atau link yang valid.")
         return ConversationHandler.END
-
-    files = {
-        'image': ('image.png', file_data, 'image/png'),
-        'scale': (None, '2'),
-    }
+    files = {'image': ('image.png', file_data, 'image/png'), 'scale': (None, '2')}
     await update.message.reply_text("⏳ Memproses *upscaling*...", parse_mode=ParseMode.MARKDOWN)
     resp = requests.post(PIXELCUT_URL, headers=PIXELCUT_HEADERS, files=files, timeout=120)
     try:
@@ -250,16 +246,13 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Gagal mendapatkan URL hasil upscaling.")
     except Exception as e:
         await update.message.reply_text(f"❌ Terjadi error: `{e}`", parse_mode=ParseMode.MARKDOWN)
-
     return ConversationHandler.END
 
-# ===============================
-# /register (email -> code -> proses)
-# ===============================
+# ===== /register flow =====
 async def register_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update):
         return ConversationHandler.END
-    await update.message.reply_text("📧 Masukkan *email* yang akan didaftarkan:", parse_mode=ParseMode.MARKDOWN)
+    await update.message.reply_text("📧 Kirim *email* yang akan didaftarkan:", parse_mode=ParseMode.MARKDOWN)
     return REG_WAIT_EMAIL
 
 async def register_recv_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -267,41 +260,37 @@ async def register_recv_email(update: Update, context: ContextTypes.DEFAULT_TYPE
         return ConversationHandler.END
     email = update.message.text.strip()
     context.user_data['reg_email'] = email
-
-    # Init instance & jalankan SetAccnt + ICreate + IBirthday + IGetCode
+    # create instance and run initial flow
     acc = Create_Accnt(email=email)
     context.user_data['acc'] = acc
-
     try:
-        await update.message.reply_text("⚙️ Inisialisasi sesi...", parse_mode=ParseMode.MARKDOWN)
+        await update.message.reply_text("⚙️ Menyiapkan sesi...", parse_mode=ParseMode.MARKDOWN)
         acc.SetAccnt()
-
-        await update.message.reply_text("🔎 Mengecek ketersediaan nama & langkah awal...", parse_mode=ParseMode.MARKDOWN)
-        if not acc.ICreate():
-            await update.message.reply_text("❌ Gagal tahap *ICreate*. Silakan coba lagi.")
+        await update.message.reply_text("🔎 Memeriksa nama & langkah awal...", parse_mode=ParseMode.MARKDOWN)
+        ok = acc.ICreate()
+        if not ok:
+            await update.message.reply_text("❌ Gagal pada tahap ICreate. Hentikan proses.", parse_mode=ParseMode.MARKDOWN)
+            context.user_data.pop('acc', None)
             return ConversationHandler.END
-
         await update.message.reply_text("🗓️ Mengecek kelayakan umur...", parse_mode=ParseMode.MARKDOWN)
         if not acc.IBirthday():
-            await update.message.reply_text("❌ Tidak memenuhi syarat usia.")
+            await update.message.reply_text("❌ Tidak memenuhi syarat umur.", parse_mode=ParseMode.MARKDOWN)
+            context.user_data.pop('acc', None)
             return ConversationHandler.END
-
         await update.message.reply_text("📨 Mengirim kode verifikasi ke email...", parse_mode=ParseMode.MARKDOWN)
         if not acc.IGetCode():
-            await update.message.reply_text("❌ Gagal mengirim kode verifikasi ke email.")
+            await update.message.reply_text("❌ Gagal mengirim kode verifikasi.", parse_mode=ParseMode.MARKDOWN)
+            context.user_data.pop('acc', None)
             return ConversationHandler.END
-
-        await update.message.reply_text(
-            "✉️ Silakan cek email kamu. Lalu *kirimkan kode verifikasi* di sini.",
-            parse_mode=ParseMode.MARKDOWN
-        )
+        await update.message.reply_text("✉️ Kode dikirim — silakan masukkan kode verifikasi di chat ini.", parse_mode=ParseMode.MARKDOWN)
         return REG_WAIT_CODE
-
     except requests.HTTPError as e:
         await update.message.reply_text(f"❌ HTTP error: {e.response.status_code}\n{e.response.text[:300]}")
+        context.user_data.pop('acc', None)
         return ConversationHandler.END
     except Exception as e:
         await update.message.reply_text(f"❌ Error: `{e}`", parse_mode=ParseMode.MARKDOWN)
+        context.user_data.pop('acc', None)
         return ConversationHandler.END
 
 async def register_recv_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -309,93 +298,77 @@ async def register_recv_code(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return ConversationHandler.END
     code = update.message.text.strip()
     acc: Create_Accnt = context.user_data.get('acc')
-
     if not acc:
-        await update.message.reply_text("⚠️ Sesi registrasi tidak ditemukan. Mulai lagi dengan /register.")
+        await update.message.reply_text("⚠️ Sesi pendaftaran tidak ditemukan. Mulai ulang dengan /register.", parse_mode=ParseMode.MARKDOWN)
         return ConversationHandler.END
-
     try:
         await update.message.reply_text("🔐 Memvalidasi kode...", parse_mode=ParseMode.MARKDOWN)
         signup_code = acc.IVcode(code)
         if not signup_code:
-            await update.message.reply_text("❌ Kode verifikasi salah/invalid.")
+            await update.message.reply_text("❌ Kode verifikasi salah/invalid.", parse_mode=ParseMode.MARKDOWN)
             return ConversationHandler.END
-
         await update.message.reply_text("🧩 Menyelesaikan pendaftaran...", parse_mode=ParseMode.MARKDOWN)
         result = acc.IVsig(signup_code)
-
         creds_text = (
             "✅ *Pendaftaran Berhasil!*\n\n"
             f"👤 *Username*: `{acc.username}`\n"
             f"📧 *Email*: `{acc.email}`\n"
             f"🔑 *Password*: `{acc.plain_password}`\n"
-            f"🧾 *Enc Pass*: `{acc.enc_password}`\n"
             f"🎂 *DOB*: `{acc.birth_day:02d}-{acc.birth_month:02d}-{acc.birth_year}`\n"
         )
         await update.message.reply_text(creds_text, parse_mode=ParseMode.MARKDOWN)
-
         pretty = json.dumps(result, indent=2, ensure_ascii=False)
         if len(pretty) < 3500:
             await update.message.reply_text(f"📦 *Response Final:*\n```\n{pretty}\n```", parse_mode=ParseMode.MARKDOWN)
         else:
             await update.message.reply_document(document=bytes(pretty, "utf-8"), filename="register_result.json", caption="📦 Response Final")
-
     except requests.HTTPError as e:
         await update.message.reply_text(f"❌ HTTP error: {e.response.status_code}\n{e.response.text[:300]}")
     except Exception as e:
         await update.message.reply_text(f"❌ Error: `{e}`", parse_mode=ParseMode.MARKDOWN)
     finally:
-        # bersihkan state
         context.user_data.pop('acc', None)
         context.user_data.pop('reg_email', None)
-
     return ConversationHandler.END
 
-# ===============================
-# AUTO MESSAGE TANPA JOB_QUEUE
-# ===============================
+# ===== Auto message without job_queue =====
 async def auto_message_task(application):
     while True:
         now = datetime.now()
-        target_times = [
-            now.replace(hour=7, minute=0, second=0, microsecond=0),   # Pagi
-            now.replace(hour=17, minute=0, second=0, microsecond=0), # Sore
-        ]
-        for target_time in target_times:
-            if datetime.now() > target_time:
-                target_time += timedelta(days=1)
-            wait_seconds = (target_time - datetime.now()).total_seconds()
-            await asyncio.sleep(max(0, wait_seconds))
+        times = [now.replace(hour=7, minute=0, second=0, microsecond=0),
+                 now.replace(hour=17, minute=0, second=0, microsecond=0)]
+        for t in times:
+            if datetime.now() > t:
+                t += timedelta(days=1)
+            wait = (t - datetime.now()).total_seconds()
+            await asyncio.sleep(max(0, wait))
             try:
-                await application.bot.send_message(
-                    chat_id=ADMIN_ID,
-                    text=("🌅 Selamat pagi! Semoga harimu menyenangkan." if target_time.hour == 7
-                          else "🌇 Selamat sore! Jangan lupa istirahat.")
-                )
+                await application.bot.send_message(chat_id=ADMIN_ID,
+                                                  text=("🌅 Selamat pagi! Semoga harimu menyenangkan." if t.hour == 7 else "🌇 Selamat sore! Jangan lupa istirahat."))
             except Exception as e:
-                print(f"Gagal kirim auto message: {e}")
+                print("Auto message error:", e)
 
-# ===============================
-# MAIN
-# ===============================
+# ===== Main =====
 def main():
+    if not BOT_TOKEN or ADMIN_ID == 0:
+        print("ERROR: Set BOT_TOKEN and ADMIN_ID environment variables.")
+        return
+
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # Upscaling convo
     upscaling_conv = ConversationHandler(
         entry_points=[CommandHandler("upscaling", upscaling)],
         states={WAITING_IMAGE: [MessageHandler(filters.PHOTO | (filters.TEXT & ~filters.COMMAND), handle_image)]},
-        fallbacks=[],
+        fallbacks=[]
     )
 
-    # Register convo (email -> code)
     register_conv = ConversationHandler(
         entry_points=[CommandHandler("register", register_start)],
         states={
             REG_WAIT_EMAIL: [MessageHandler(filters.TEXT & ~filters.COMMAND, register_recv_email)],
-            REG_WAIT_CODE:  [MessageHandler(filters.TEXT & ~filters.COMMAND, register_recv_code)],
+            REG_WAIT_CODE:  [MessageHandler(filters.TEXT & ~filters.COMMAND, register_recv_code)]
         },
-        fallbacks=[],
+        fallbacks=[]
     )
 
     app.add_handler(CommandHandler("start", start))
@@ -406,7 +379,7 @@ def main():
     loop = asyncio.get_event_loop()
     loop.create_task(auto_message_task(app))
 
-    print("🚀 Bot berjalan...")
+    print("Bot starting...")
     app.run_polling()
 
 if __name__ == "__main__":
