@@ -1,17 +1,16 @@
 import os
+import asyncio
 import requests
-import tempfile
-from datetime import datetime
-from telegram import Update
-from telegram.constants import ParseMode
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from datetime import datetime, timedelta
+from telegram import Update, InputFile
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters, ConversationHandler
 
-# ===== CONFIG =====
+# Ambil dari Railway env
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+ADMIN_ID = int(os.getenv("ADMIN_ID"))
 
 PIXELCUT_URL = "https://api2.pixelcut.app/image/upscale/v1"
-HEADERS = {
+PIXELCUT_HEADERS = {
     'authority': 'api2.pixelcut.app',
     'accept': 'application/json',
     'origin': 'https://www.pixelcut.ai',
@@ -21,114 +20,120 @@ HEADERS = {
     'x-locale': 'en',
 }
 
-MENU_IMAGE_URL = "https://raw.githubusercontent.com/hiroxenz/llllasokksa/refs/heads/main/photo_2025-08-14_15-26-37.jpg"
+WAITING_IMAGE = 1
 
-waiting_for_image = set()
-
-# ===== ADMIN CHECK =====
-def is_admin(user_id: int) -> bool:
-    return user_id == ADMIN_ID
-
-# ===== COMMAND HANDLERS =====
+# ===============================
+# COMMAND START
+# ===============================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("🚫 Anda tidak memiliki izin untuk menggunakan bot ini.")
+    if update.effective_user.id != ADMIN_ID:
         return
-    await menu(update, context)
+    await update.message.reply_text("✨ Selamat datang! Ketik /menu untuk melihat fitur bot ini.")
 
+# ===============================
+# COMMAND MENU
+# ===============================
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("🚫 Anda tidak memiliki izin untuk menggunakan bot ini.")
+    if update.effective_user.id != ADMIN_ID:
         return
-
-    caption = (
-        "╭━━━『 📜 *Main Menu* 』━━━╮\n"
-        "┣ 🎯 /upscaling — *Perbesar & tingkatkan kualitas gambar*\n"
-        "┣ 📌 /menu — *Tampilkan menu ini*\n"
-        "┣ 🏁 /start — *Mulai bot*\n"
-        "╰━━━━━━━━━━━━━━━━━━╯"
+    menu_text = (
+        "📜 *Daftar Menu Bot:*\n\n"
+        "1️⃣ /upscaling – Upscale foto hingga 2x kualitas aslinya\n"
+        "2️⃣ (fitur lainnya bisa ditambahkan di sini)\n\n"
+        "💡 *Tips:* Gunakan menu dengan bijak."
     )
+    photo_url = "https://raw.githubusercontent.com/hiroxenz/llllasokksa/refs/heads/main/photo_2025-08-14_15-26-37.jpg"
+    await update.message.reply_photo(photo=photo_url, caption=menu_text, parse_mode="Markdown")
 
-    await update.message.reply_photo(photo=MENU_IMAGE_URL, caption=caption, parse_mode=ParseMode.MARKDOWN)
-
-async def start_upscaling(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("🚫 Anda tidak memiliki izin untuk menggunakan bot ini.")
+# ===============================
+# COMMAND UPSCALING
+# ===============================
+async def upscaling(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
         return
-    waiting_for_image.add(update.effective_user.id)
-    await update.message.reply_text("🔼 *Kirim foto atau link gambar yang ingin di-upscale.*", parse_mode=ParseMode.MARKDOWN)
+    await update.message.reply_text("📤 Silakan kirim foto atau link foto yang ingin di-*upscale*.")
+    return WAITING_IMAGE
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if not is_admin(user_id):
-        await update.message.reply_text("🚫 Anda tidak memiliki izin untuk menggunakan bot ini.")
-        return
-
-    if user_id not in waiting_for_image:
+async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
         return
 
-    if update.message.text and update.message.text.startswith("http"):
-        await update.message.reply_text("⏳ *Mengunduh gambar dari link...*", parse_mode=ParseMode.MARKDOWN)
-        try:
-            img_data = requests.get(update.message.text, timeout=10).content
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
-                tmp.write(img_data)
-                tmp_path = tmp.name
-            await upscale_and_send(update, tmp_path)
-        except Exception as e:
-            await update.message.reply_text(f"❌ *Gagal mengunduh gambar:* `{e}`", parse_mode=ParseMode.MARKDOWN)
+    image_url = None
+    file_data = None
 
-    elif update.message.photo:
-        await update.message.reply_text("⏳ *Mengunggah gambar...*", parse_mode=ParseMode.MARKDOWN)
+    if update.message.photo:  # Jika user kirim gambar langsung
         file_id = update.message.photo[-1].file_id
-        photo_file = await context.bot.get_file(file_id)
-        tmp_path = tempfile.mktemp(suffix=".jpg")
-        await photo_file.download_to_drive(tmp_path)
-        await upscale_and_send(update, tmp_path)
+        new_file = await context.bot.get_file(file_id)
+        file_data = requests.get(new_file.file_path).content
+    elif update.message.text and update.message.text.startswith("http"):
+        image_url = update.message.text
+        file_data = requests.get(image_url).content
 
-    else:
-        await update.message.reply_text("❌ *Harap kirim foto atau link gambar yang valid.*", parse_mode=ParseMode.MARKDOWN)
+    if not file_data:
+        await update.message.reply_text("❌ Gagal membaca gambar. Pastikan kirim foto atau link yang valid.")
+        return ConversationHandler.END
 
-async def upscale_and_send(update: Update, file_path: str):
+    # Kirim ke Pixelcut API
+    files = {
+        'image': ('image.png', file_data, 'image/png'),
+        'scale': (None, '2'),
+    }
+    await update.message.reply_text("⏳ Memproses *upscaling*, mohon tunggu...", parse_mode="Markdown")
+    resp = requests.post(PIXELCUT_URL, headers=PIXELCUT_HEADERS, files=files)
     try:
-        files = {
-            'image': ('myimage.png', open(file_path, 'rb'), 'image/png'),
-            'scale': (None, '2'),
-        }
-        response = requests.post(PIXELCUT_URL, headers=HEADERS, files=files)
-        if response.status_code == 200:
-            result_url = response.json().get('result_url')
-            if result_url:
-                await update.message.reply_photo(photo=result_url, caption="✅ *Gambar berhasil di-upscale!*", parse_mode=ParseMode.MARKDOWN)
-            else:
-                await update.message.reply_text("❌ *Gagal mendapatkan URL hasil upscale.*", parse_mode=ParseMode.MARKDOWN)
-        else:
-            await update.message.reply_text(f"❌ *Gagal memproses gambar (status {response.status_code}).*", parse_mode=ParseMode.MARKDOWN)
+        url_image = resp.json()['result_url']
+        await update.message.reply_photo(photo=url_image, caption="✅ *Upscaling selesai!*", parse_mode="Markdown")
     except Exception as e:
-        await update.message.reply_text(f"❌ *Error:* `{e}`", parse_mode=ParseMode.MARKDOWN)
-    finally:
-        waiting_for_image.discard(update.effective_user.id)
+        await update.message.reply_text(f"❌ Gagal memproses gambar.\nError: {e}")
 
-# ===== AUTO MESSAGE MORNING & EVENING =====
-async def auto_message(context: ContextTypes.DEFAULT_TYPE):
-    now = datetime.now()
-    if now.hour == 7:
-        text = "🌅 *Selamat Pagi!* Semoga harimu penuh semangat 🚀"
-        await context.bot.send_message(chat_id=ADMIN_ID, text=text, parse_mode=ParseMode.MARKDOWN)
-    elif now.hour == 17:
-        text = "🌇 *Selamat Sore!* Waktunya istirahat ✨"
-        await context.bot.send_message(chat_id=ADMIN_ID, text=text, parse_mode=ParseMode.MARKDOWN)
+    return ConversationHandler.END
 
-# ===== MAIN =====
-if __name__ == "__main__":
+# ===============================
+# AUTO MESSAGE TANPA JOB_QUEUE
+# ===============================
+async def auto_message_task(application):
+    while True:
+        now = datetime.now()
+        target_times = [
+            now.replace(hour=7, minute=0, second=0, microsecond=0),  # Pagi
+            now.replace(hour=17, minute=0, second=0, microsecond=0)  # Sore
+        ]
+
+        for target_time in target_times:
+            if now > target_time:
+                target_time += timedelta(days=1)
+            wait_seconds = (target_time - datetime.now()).total_seconds()
+            await asyncio.sleep(wait_seconds)
+
+            # Kirim pesan otomatis
+            try:
+                await application.bot.send_message(
+                    chat_id=ADMIN_ID,
+                    text="🌅 Selamat pagi! Semoga harimu menyenangkan." if target_time.hour == 7 else "🌇 Selamat sore! Jangan lupa istirahat."
+                )
+            except Exception as e:
+                print(f"Gagal kirim auto message: {e}")
+
+# ===============================
+# MAIN
+# ===============================
+def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler("upscaling", upscaling)],
+        states={WAITING_IMAGE: [MessageHandler(filters.PHOTO | filters.TEXT & ~filters.COMMAND, handle_image)]},
+        fallbacks=[],
+    )
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("menu", menu))
-    app.add_handler(CommandHandler("upscaling", start_upscaling))
-    app.add_handler(MessageHandler(filters.ALL, handle_message))
+    app.add_handler(conv_handler)
 
-    app.job_queue.run_repeating(auto_message, interval=3600, first=0)
+    loop = asyncio.get_event_loop()
+    loop.create_task(auto_message_task(app))
 
-    print("🚀 Bot berjalan...")
     app.run_polling()
+
+if __name__ == "__main__":
+    main()
